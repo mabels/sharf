@@ -28,23 +28,28 @@ pub fn establish_connection() -> PgConnection {
 */
 
 //#[derive(Queryable)]
-pub struct Mapo {
-    pub bits: isize,
-    pub val: BigInt,
-    pub count: isize,
+//pub struct Mapo {
+//    pub bits: isize,
+//    pub val: BigInt,
+//    pub count: isize,
+//}
+
+
+struct Splitter {
+	len : usize,
+	val : u32 
 }
 
-
-fn split_by_bits(sha: String/*, ac: &Fn(&String, usize)*/) -> Vec<String> {
+fn split_by_bits(sha: String/*, ac: &Fn(&String, usize)*/) -> Vec<Splitter> {
     let mut ret = Vec::new();
-    for i in [32,16].iter() {
+    for i in [32,16, 8].iter() {
         let len = sha.len()/i;
         let mut j = 0;
         while j < sha.len() {
-            let sub = sha.chars().skip(j).take(len).collect();
-	    ret.push(sub);
+            let sub : String = sha.chars().skip(j).take(len).collect();
+	    ret.push(Splitter { len: len, val: u32::from_str_radix(&sub, 16).unwrap() });
             //ac(&sub, j);
-            j = j + len
+            j = j + len;
         }
     }
     return ret;
@@ -73,16 +78,18 @@ fn transform_u32_to_array_of_u8(x:u32) -> [u8;4] {
     return [b1, b2, b3, b4]
 }
 
-fn dump_to_sql(res_so: &Arc<std::sync::Mutex<std::collections::HashMap<std::string::String, isize>>>) {
-    let conn = Connection::connect("postgresql://root:meno@localhost:5433/root", TlsMode::None).unwrap();
-    if conn.execute("CREATE TABLE mapo (
-                    bits             INTEGER NOT NULL,
+fn create_mapos(conn: &postgres::Connection, v: &Vec<usize>) {
+  for x in v {
+    if conn.execute(&format!("CREATE TABLE mapo{} (
                     val              DECIMAL NOT NULL,
-                    count            INTEGER)", &[]).is_ok() {
-       println!("create mapo");
+                    count            INTEGER)", x), &[]).is_ok() {
+       println!("create mapo {}", x);
     } else {
-       println!("failed create mapo");
+       println!("failed create mapo {}", x);
     }
+  }
+}
+fn dump_to_sql(conn: &postgres::Connection, res_so: &Arc<std::sync::Mutex<HashMap<usize, HashMap<u32, usize>>>>) {
         let mut x = 0;
         let mut trans = conn.transaction().unwrap();
         let mut sql = String::from("INSERT INTO mapo values ");
@@ -105,46 +112,92 @@ fn dump_to_sql(res_so: &Arc<std::sync::Mutex<std::collections::HashMap<std::stri
         trans.commit();
 }
 
+struct LenValCnt {
+	pub len : u8,
+	pub val : u32,
+	pub cnt : u32
+}
+
+struct Mapo {
+	pub lens: [usize];
+	pub lenMap : [Option<HashMap<u32, LenValCnt>>]
+}
+
+impl Mapo {
+	fn new(lens: &Vec<usize>) -> Mapo {
+		let flatLen = lens.iter().max();
+		let mut flatVec [Option<HashMap<u32, LenValCnt>>; flatLen] = [None; flatLen];	
+  	for x in lens {
+			flatVec[x] = HashMap<u32, LenValCnt>::new();
+		}
+		return Mapo {
+      lens: lens.clone(),
+			lenMap : flatVec
+		}
+	}
+
+	fn add(&mut self, len: usize, val: u32, cnt: u32) {
+		self.lenMap[len].entry(val).or_insert(0) += cnt; 
+	}
+
+	fn for_each(&self, len: usize, ac: &Fn(usize, u32, u32)) {
+		for i in self.lenMap[len].values() {
+			ac(i.len, i.val, i.count);
+		}
+	} 
+	fn reset() {
+		for len in self.lens {
+			self.lenMap[len].unwrap().clear();
+		}
+	}
+}
+
 fn main() {
     //infer_schema!("dotenv:DATABASE_URL");
     let start = 0;
     let step  = (4294967296 as usize)/ (8 as usize);
     let mut threads = Vec::new();
-    let so: HashMap<String, isize> = HashMap::new();
-    let res_so = Arc::new(Mutex::new(so));
+    let lens = vec![2,4,8];
+    //let so: HashMap<usize, HashMap<u32, usize>> = HashMap::new();
+    //let res_so = Arc::new(Mutex::new(so));
+    create_mapos(&conn, lens);
     for yy in 0..8 {
 	let y = yy.clone();
-	let tres_so = res_so.clone();
+	//let tres_so = res_so.clone();
 	threads.push(thread::spawn(move || {
+    	    let conn = Connection::connect("postgresql://root:meno@localhost:5433/root", TlsMode::None).unwrap();
 	    println!("Range for:{}:{:08x}-{:08x}", y, (step*y), (step*(y+1)));
-	    let mut my: HashMap<String, isize> = HashMap::new();
+	    //let mut my: HashMap<String, isize> = HashMap::new();
+	    let mut my = Mapo::new(lens);
 	    for x in (step*y)..(step*(y+1)) {
 		let data = format!("{}", x);
 		let result = hex_digest(Algorithm::SHA256, &transform_u32_to_array_of_u8(x as u32));
 		//println!("{}", result)
-		
 		//split_by_bits(result, &mut|val, bits| {
 		for val in split_by_bits(result) {
 		 
 		    //let mut so = tres_so.lock().unwrap();
+		    my.add(val.len, val.val, 1);
+		    /*
 		    let x = match my.get(&val) {
 			Some(s) => s+1,
 			None => 1,
 		    };
 		    my.insert(val.clone(), x);
+		    */
 		}//);
-		if (x % 100000) == 0 {
+		if (x % 20000) == 0 {
 		    //println!("{}:{}:{}", y, x, tres_so.lock().unwrap().len());
-		    println!("{}:{}:{}", y, x, my.len());
+		    println!("{}:{}", y, x);
+		     
+				let bb = BuildBatch::new();
+				for len in lens {
+		    	my.for_each(len, &mut|val, cnt| {
+			    so.insert(val.clone(), x);
+		    });
+				}
+				my.reset();
 		}
-	    }
-            for (val, cnt) in my { 
-		    let mut so = tres_so.lock().unwrap();
-		    let x = match so.get(&val) {
-			Some(s) => s+cnt,
-			None => cnt,
-		    };
-		    so.insert(val.clone(), x);
 	    }
 	}));
       }
@@ -152,7 +205,6 @@ fn main() {
 	let first = threads.pop().unwrap();
 	first.join();
       }
-      dump_to_sql(&res_so);
 /*
 */
 }
