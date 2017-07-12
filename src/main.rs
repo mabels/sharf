@@ -69,6 +69,8 @@ fn transform_u32_to_array_of_u8(x: u32) -> [u8; 4] {
 }
 
 struct Mapo {
+    pub start: usize,
+    pub comma: &'static str,
     pub len: usize,
     // pub lenMap : [Option<HashMap<u32, LenValCnt>>]
     pub conn: postgres::Connection,
@@ -76,12 +78,13 @@ struct Mapo {
     pub buff_items: usize,
     pub elements: usize,
     pub prefix: String,
+    pub total: usize
 }
 
 impl Mapo {
     fn create_mapo(&self) {
         if self.conn
-            .execute(&format!("CREATE TABLE mapo{} (
+            .execute(&format!("CREATE TABLE IF NOT EXISTS mapo{} (
                 val              INTEGER \
                                NOT NULL
             )", self.len), &[])
@@ -92,23 +95,32 @@ impl Mapo {
         }
     }
 
-    fn new(len: usize, elements: usize) -> Mapo {
-        let prefix = format!("INSERT INTO mapo{} values", len);
-        let ret = Mapo {
+    fn new(start: usize, len: usize, elements: usize) -> Mapo {
+        let prefix = format!("INSERT INTO mapo{} values ", len);
+        let mut ret = Mapo {
+            start: start,
+            comma: "",
             conn: Connection::connect("postgresql://root:meno@localhost:5433/root", TlsMode::None)
                 .unwrap(),
             len: len,
             prefix: prefix.clone(),
-            buffer: prefix.clone(),
+            buffer: String::with_capacity(1048576),
             buff_items: 0,
             elements: elements,
+            total: 0
         };
+	ret.buffer.push_str(&ret.prefix);
         ret.create_mapo();
         return ret;
     }
 
     fn add(&mut self, val: u32) {
-        self.buffer.push_str(&format!("({})", val));
+        self.buffer.push_str(&format!("{}({})", self.comma, val as i32));
+	self.comma = ",";
+        self.total += 1;
+        if (self.total % 10000000) == 0 {
+          println!("{}=>{}", self.start, self.total);
+	}
         if self.buff_items < self.elements {
             self.buff_items += 1;
         } else {
@@ -123,8 +135,10 @@ impl Mapo {
     // }
     //
     fn commit(&mut self) {
+	//println!("{}", self.buffer);
         self.conn.execute(&self.buffer, &[]).unwrap();
         self.buff_items = 0;
+	self.comma = "";
         self.buffer.clear();
         self.buffer.push_str(&self.prefix);
     }
@@ -150,7 +164,7 @@ fn main() {
                      (step * y),
                      (step * (y + 1)));
             // let mut my: HashMap<String, isize> = HashMap::new();
-            let mut my = Mapo::new(8, 10000);
+            let mut my = Mapo::new(step * y, 8, 50000);
             for x in (step * y)..(step * (y + 1)) {
                 // let data = format!("{}", x);
                 let result = hex_digest(Algorithm::SHA256, &transform_u32_to_array_of_u8(x as u32));
